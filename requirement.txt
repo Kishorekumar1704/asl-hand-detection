@@ -1,8 +1,0 @@
-opencv-python
-numpy
-mediapipe
-tensorflow
-scikit-learn
-fuzzywuzzy
-python-Levenshtein
-pyttsx3

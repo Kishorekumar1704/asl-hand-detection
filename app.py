@@ -10,7 +10,7 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 
 
 # ============================================================
-# STREAMLIT PAGE CONFIGURATION
+# PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -30,7 +30,7 @@ st.write(
     "Show an ASL hand sign (A–Z) to the webcam."
 )
 
-st.warning(
+st.info(
     "Allow camera permission when your browser asks for access."
 )
 
@@ -43,14 +43,14 @@ st.warning(
 def load_model_and_encoder():
 
     model = tf.keras.models.load_model(
-        "model_groupAZ_final.h5"
+        "model_groupAZ_final.h5",
+        compile=False
     )
 
     with open(
         "label_encoder_groupAZ.pkl",
         "rb"
     ) as f:
-
         label_encoder = pickle.load(f)
 
     return model, label_encoder
@@ -61,16 +61,15 @@ model, le = load_model_and_encoder()
 
 
 # ============================================================
-# MEDIAPIPE HAND CONFIGURATION
+# MEDIAPIPE
 # ============================================================
 
 mp_hands = mp.solutions.hands
-
 mp_draw = mp.solutions.drawing_utils
 
 
 # ============================================================
-# ASL VIDEO PROCESSOR
+# VIDEO PROCESSOR
 # ============================================================
 
 class ASLVideoProcessor(VideoProcessorBase):
@@ -82,30 +81,23 @@ class ASLVideoProcessor(VideoProcessorBase):
         # ----------------------------------------------------
 
         self.hands = mp_hands.Hands(
-
             static_image_mode=False,
-
             max_num_hands=1,
-
             model_complexity=0,
-
             min_detection_confidence=0.7,
-
             min_tracking_confidence=0.7
         )
 
-
         # ----------------------------------------------------
-        # Prediction History
+        # Prediction history
         # ----------------------------------------------------
 
         self.label_history = deque(
             maxlen=10
         )
 
-
         # ----------------------------------------------------
-        # Current Prediction
+        # Current prediction
         # ----------------------------------------------------
 
         self.current_label = "Hand not detected"
@@ -114,7 +106,7 @@ class ASLVideoProcessor(VideoProcessorBase):
 
 
     # ========================================================
-    # PROCESS EACH VIDEO FRAME
+    # PROCESS VIDEO FRAME
     # ========================================================
 
     def recv(self, frame):
@@ -129,7 +121,7 @@ class ASLVideoProcessor(VideoProcessorBase):
 
 
         # ----------------------------------------------------
-        # Flip image horizontally
+        # Mirror the webcam
         # ----------------------------------------------------
 
         img = cv2.flip(
@@ -139,7 +131,7 @@ class ASLVideoProcessor(VideoProcessorBase):
 
 
         # ----------------------------------------------------
-        # Convert BGR to RGB
+        # Convert BGR → RGB
         # ----------------------------------------------------
 
         rgb = cv2.cvtColor(
@@ -149,7 +141,7 @@ class ASLVideoProcessor(VideoProcessorBase):
 
 
         # ----------------------------------------------------
-        # MediaPipe Hand Detection
+        # MediaPipe detection
         # ----------------------------------------------------
 
         results = self.hands.process(
@@ -168,252 +160,205 @@ class ASLVideoProcessor(VideoProcessorBase):
 
         if results.multi_hand_landmarks:
 
-            for hand_landmarks in results.multi_hand_landmarks:
+            # Only one hand is expected
+            hand_landmarks = results.multi_hand_landmarks[0]
 
 
-                # ------------------------------------------------
-                # Draw hand landmarks
-                # ------------------------------------------------
+            # ------------------------------------------------
+            # Draw landmarks
+            # ------------------------------------------------
 
-                mp_draw.draw_landmarks(
+            mp_draw.draw_landmarks(
+                img,
+                hand_landmarks,
+                mp_hands.HAND_CONNECTIONS
+            )
 
-                    img,
 
-                    hand_landmarks,
+            # ------------------------------------------------
+            # Image dimensions
+            # ------------------------------------------------
 
-                    mp_hands.HAND_CONNECTIONS
+            h, w, _ = img.shape
+
+
+            # ------------------------------------------------
+            # Extract landmark coordinates
+            # ------------------------------------------------
+
+            coords = []
+
+            for lm in hand_landmarks.landmark:
+
+                x = int(
+                    lm.x * w
+                )
+
+                y = int(
+                    lm.y * h
+                )
+
+                coords.extend(
+                    [x, y]
+                )
+
+
+            # ------------------------------------------------
+            # Verify 21 landmarks × 2 = 42 values
+            # ------------------------------------------------
+
+            if len(coords) == 42:
+
+                X = np.array(
+                    coords,
+                    dtype=np.float32
+                ).reshape(
+                    1,
+                    -1
                 )
 
 
                 # ------------------------------------------------
-                # Get image dimensions
+                # Model prediction
                 # ------------------------------------------------
 
-                h, w, _ = img.shape
-
-
-                # ------------------------------------------------
-                # Store coordinates
-                # ------------------------------------------------
-
-                coords = []
+                pred = model.predict(
+                    X,
+                    verbose=0
+                )
 
 
                 # ------------------------------------------------
-                # Extract 21 hand landmarks
+                # Confidence
                 # ------------------------------------------------
 
-                for lm in hand_landmarks.landmark:
-
-                    x = int(
-                        lm.x * w
-                    )
-
-                    y = int(
-                        lm.y * h
-                    )
-
-
-                    coords.extend(
-                        [x, y]
-                    )
+                confidence = float(
+                    np.max(pred)
+                )
 
 
                 # ------------------------------------------------
-                # Verify 42 coordinates
+                # Predicted class
                 # ------------------------------------------------
 
-                if len(coords) == 42:
+                predicted_index = int(
+                    np.argmax(pred)
+                )
 
 
-                    # --------------------------------------------
-                    # Convert to NumPy array
-                    # --------------------------------------------
+                # ------------------------------------------------
+                # Convert class index → letter
+                # ------------------------------------------------
 
-                    X = np.array(
-                        coords,
-                        dtype=np.float32
-                    ).reshape(
-                        1,
-                        -1
+                label = le.inverse_transform(
+                    [predicted_index]
+                )[0]
+
+
+                # =================================================
+                # HIGH CONFIDENCE
+                # =================================================
+
+                if confidence >= 0.70:
+
+                    self.label_history.append(
+                        label
                     )
 
 
-                    # --------------------------------------------
-                    # Model prediction
-                    # --------------------------------------------
-
-                    pred = model.predict(
-                        X,
-                        verbose=0
-                    )
+                    # Find most common label
+                    common_label, count = Counter(
+                        self.label_history
+                    ).most_common(1)[0]
 
 
-                    # --------------------------------------------
-                    # Confidence
-                    # --------------------------------------------
+                    # ------------------------------------------------
+                    # Stabilize prediction
+                    # ------------------------------------------------
 
-                    confidence = float(
-                        np.max(pred)
-                    )
-
-
-                    # --------------------------------------------
-                    # Get predicted class index
-                    # --------------------------------------------
-
-                    predicted_index = int(
-                        np.argmax(pred)
-                    )
-
-
-                    # --------------------------------------------
-                    # Convert index to label
-                    # --------------------------------------------
-
-                    label = le.inverse_transform(
-                        [predicted_index]
-                    )[0]
-
-
-                    # =================================================
-                    # CONFIDENCE CHECK
-                    # =================================================
-
-                    if confidence >= 0.70:
-
-
-                        # ---------------------------------------------
-                        # Add prediction to history
-                        # ---------------------------------------------
-
-                        self.label_history.append(
-                            label
-                        )
-
-
-                        # ---------------------------------------------
-                        # Find most common prediction
-                        # ---------------------------------------------
-
-                        common_label, count = Counter(
-                            self.label_history
-                        ).most_common(1)[0]
-
-
-                        # ---------------------------------------------
-                        # Stabilize prediction
-                        # ---------------------------------------------
-
-                        if count >= 5:
-
-                            display_text = (
-                                f"✅ {common_label} "
-                                f"({confidence:.2f})"
-                            )
-
-
-                            self.current_label = (
-                                common_label
-                            )
-
-
-                        else:
-
-                            display_text = (
-                                f"⏳ {label} "
-                                "Stabilizing..."
-                            )
-
-
-                            self.current_label = (
-                                label
-                            )
-
-
-                        self.confidence = (
-                            confidence
-                        )
-
-
-                    # =================================================
-                    # LOW CONFIDENCE
-                    # =================================================
-
-                    else:
-
-                        self.label_history.clear()
-
+                    if count >= 5:
 
                         display_text = (
-                            f"⚠ Low Confidence "
+                            f"✅ {common_label} "
                             f"({confidence:.2f})"
                         )
 
-
                         self.current_label = (
-                            "Low confidence"
+                            common_label
                         )
 
+                    else:
 
-                        self.confidence = (
-                            confidence
+                        display_text = (
+                            f"⏳ {label} "
+                            "Stabilizing..."
                         )
+
+                        self.current_label = label
+
+
+                    self.confidence = confidence
+
+
+                # =================================================
+                # LOW CONFIDENCE
+                # =================================================
+
+                else:
+
+                    self.label_history.clear()
+
+                    display_text = (
+                        f"⚠ Low Confidence "
+                        f"({confidence:.2f})"
+                    )
+
+                    self.current_label = (
+                        "Low confidence"
+                    )
+
+                    self.confidence = confidence
 
 
         # ====================================================
-        # NO HAND DETECTED
+        # NO HAND
         # ====================================================
 
         else:
 
             self.label_history.clear()
 
-
             self.current_label = (
                 "Hand not detected"
             )
-
 
             self.confidence = 0.0
 
 
         # ====================================================
-        # PREDICTION DISPLAY BOX
+        # PREDICTION BOX
         # ====================================================
 
         cv2.rectangle(
-
             img,
-
             (10, 10),
-
-            (450, 75),
-
+            (500, 80),
             (0, 0, 0),
-
             -1
         )
 
 
         # ====================================================
-        # DISPLAY TEXT
+        # DISPLAY PREDICTION
         # ====================================================
 
         cv2.putText(
-
             img,
-
             display_text,
-
-            (20, 52),
-
+            (20, 55),
             cv2.FONT_HERSHEY_SIMPLEX,
-
             0.8,
-
             (255, 255, 255),
-
             2
         )
 
@@ -423,9 +368,7 @@ class ASLVideoProcessor(VideoProcessorBase):
         # ====================================================
 
         return frame.from_ndarray(
-
             img,
-
             format="bgr24"
         )
 
@@ -435,15 +378,12 @@ class ASLVideoProcessor(VideoProcessorBase):
 # ============================================================
 
 webrtc_streamer(
-
     key="asl-sign-recognition",
 
     video_processor_factory=ASLVideoProcessor,
 
     media_stream_constraints={
-
         "video": True,
-
         "audio": False
     },
 
@@ -452,30 +392,35 @@ webrtc_streamer(
 
 
 # ============================================================
-# INFORMATION
+# INSTRUCTIONS
 # ============================================================
 
 st.markdown("---")
 
-st.subheader("How to use")
+st.subheader("📌 How to use")
 
 st.write(
     """
-    1. Click **START** to enable the webcam.
+    1. Click **START** to activate the webcam.
     2. Allow camera permission.
-    3. Show one hand clearly in front of the camera.
-    4. Hold the ASL sign steady for a few moments.
-    5. The prediction will appear on the video.
+    3. Place your hand clearly in front of the camera.
+    4. Show one ASL sign.
+    5. Hold the sign steady for a moment.
+    6. The predicted letter will appear on the screen.
     """
 )
 
 
-st.subheader("Prediction Information")
+# ============================================================
+# PREDICTION RULES
+# ============================================================
+
+st.subheader("📊 Prediction Rules")
 
 st.write(
     """
-    - 🟢 Confidence ≥ 70% → Prediction accepted
-    - ⏳ Prediction is stabilized using recent frames
+    - ✅ Confidence ≥ 70% → Prediction accepted
+    - ⏳ Prediction is stabilized using the last 10 frames
     - ⚠ Confidence < 70% → Low confidence
     - ❗ No hand detected → Show your hand clearly
     """

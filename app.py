@@ -4,62 +4,122 @@ import mediapipe as mp
 import numpy as np
 import tensorflow as tf
 import pickle
-import time
+from collections import deque, Counter
 
-# Load model and label encoder
-model = tf.keras.models.load_model("asl_model.h5")
-with open("label_encoder.pkl", "rb") as f:
+# ----------------------------
+# Load Model & Label Encoder
+# ----------------------------
+model = tf.keras.models.load_model("model_groupAZ_final.h5")
+
+with open("label_encoder_groupAZ.pkl", "rb") as f:
     le = pickle.load(f)
 
-# MediaPipe setup
+# ----------------------------
+# MediaPipe
+# ----------------------------
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(max_num_hands=1)
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1,
+    model_complexity=0,
+    min_detection_confidence=0.7,
+)
+
 mp_draw = mp.solutions.drawing_utils
 
-# Streamlit layout
-st.title("🤚 SignSpeak: ASL to Text Translator (Webcam)")
-st.markdown("Hold your hand sign in front of the webcam. The model will predict the letter in real time.")
+# ----------------------------
+# Streamlit UI
+# ----------------------------
+st.set_page_config(page_title="ASL Sign Recognition", layout="centered")
+
+st.title("🤚 ASL Sign Recognition")
+st.write("Show a hand sign (A-M) to the webcam.")
 
 run = st.checkbox("Start Webcam")
 
-frame_window = st.image([])  # Live webcam feed
-prediction_text = st.empty()  # Show prediction
+frame_placeholder = st.empty()
+prediction_placeholder = st.empty()
 
-cap = None
+# ----------------------------
+# Prediction Stabilizer
+# ----------------------------
+label_history = deque(maxlen=10)
 
 if run:
+
     cap = cv2.VideoCapture(0)
 
     while run:
+
         ret, frame = cap.read()
+
         if not ret:
-            st.error("❌ Unable to access webcam.")
+            st.error("Unable to access webcam.")
             break
 
         frame = cv2.flip(frame, 1)
+
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = hands.process(rgb)
 
-        pred = "✋ Show a hand sign"
-        if result.multi_hand_landmarks:
-            for handLms in result.multi_hand_landmarks:
-                mp_draw.draw_landmarks(frame, handLms, mp_hands.HAND_CONNECTIONS)
+        results = hands.process(rgb)
 
-                # Extract 21 hand keypoints
-                keypoints = []
-                for lm in handLms.landmark:
-                    keypoints.extend([lm.x, lm.y])
+        display_text = "❗ Hand not detected"
 
-                if len(keypoints) == 42:
-                    X = np.array(keypoints).reshape(1, -1)
-                    y_pred = model.predict(X, verbose=0)
-                    label = le.inverse_transform([np.argmax(y_pred)])[0]
-                    pred = f"🧠 Predicted Sign: **{label}**"
+        if results.multi_hand_landmarks:
 
-        frame_window.image(frame, channels="BGR")
-        prediction_text.markdown(pred)
-        time.sleep(0.05)
+            for hand_landmarks in results.multi_hand_landmarks:
+
+                mp_draw.draw_landmarks(
+                    frame,
+                    hand_landmarks,
+                    mp_hands.HAND_CONNECTIONS
+                )
+
+                h, w, _ = frame.shape
+
+                coords = []
+
+                # Pixel coordinates (same as training)
+                for lm in hand_landmarks.landmark:
+                    x = int(lm.x * w)
+                    y = int(lm.y * h)
+                    coords.extend([x, y])
+
+                if len(coords) == 42:
+
+                    X = np.array(coords, dtype=np.float32).reshape(1, -1)
+
+                    pred = model.predict(X, verbose=0)
+
+                    confidence = float(np.max(pred))
+
+                    label = le.inverse_transform([np.argmax(pred)])[0]
+
+                    if confidence >= 0.70:
+
+                        label_history.append(label)
+
+                        common_label, count = Counter(label_history).most_common(1)[0]
+
+                        if count >= 5:
+                            display_text = f"✅ {common_label} ({confidence:.2f})"
+                        else:
+                            display_text = f"⏳ {label} Stabilizing..."
+
+                    else:
+                        label_history.clear()
+                        display_text = f"⚠ Low Confidence ({confidence:.2f})"
+
+        else:
+            label_history.clear()
+
+        frame_placeholder.image(frame, channels="BGR")
+
+        prediction_placeholder.markdown(
+            f"## Prediction: {display_text}"
+        )
 
     cap.release()
+
 else:
-    st.info("🟡 Click 'Start Webcam' to begin.")
+    st.info("Click **Start Webcam** to begin.")

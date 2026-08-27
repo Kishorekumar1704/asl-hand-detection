@@ -65,7 +65,7 @@ loss, acc = model.evaluate(X_test, y_test)
 print(f"\n✅ Final Accuracy on A-Z test set: {acc * 100:.2f}%")
 
 # --- Save model and label encoder ---
-model.save("model_groupAZ_final1.h5")
+model.save("model_groupAZ_final.h5")
 with open("label_encoder_groupAZ.pkl", "wb") as f:
     pickle.dump(label_encoder, f)
 

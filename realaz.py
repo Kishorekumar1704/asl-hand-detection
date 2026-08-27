@@ -10,8 +10,8 @@ from collections import deque, Counter
 import threading
 
 # --- Load Model & Encoder ---
-model = load_model("model_groupAZ_final1.h5")
-with open("label_encoder_groupAZ.pkl", "rb") as f:
+model = load_model("model_groupAM_final.h5")
+with open("label_encoder_groupAM.pkl", "rb") as f:
     label_encoder = pickle.load(f)
 
 # --- Load English Word List ---
